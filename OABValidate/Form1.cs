@@ -218,6 +218,13 @@ namespace OABValidate
         private void SetButtonGetOABsEnabled(bool enabled)
         {
             this.buttonGetOABs.Enabled = enabled;
+
+            // This means we're done running. I'm going to cheat and
+            // just add this here.
+            if (startImmediately)
+            {
+                Application.Exit();
+            }
         }
 
 		private void buttonGetOABs_Click(object sender, EventArgs e)
