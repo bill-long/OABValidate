@@ -117,29 +117,53 @@ namespace OABValidate
         int objectsProcessed = 0;
         int problemObjects = 0;
         string logFile = "";
+        bool startImmediately = false;
         delegate void SetIntCallback(int integer);
         delegate void LogTextCallback(string text);
         delegate void SetBoolCallback(bool boolean);
 
-		public Form1()
+		public Form1() : this("")
 		{
-			this.InitializeComponent();
+		}
+
+        public Form1(string gcName)
+        {
+            this.InitializeComponent();
 #if DEBUG
             this.Text = "OABValidate DEBUG BUILD";
 #endif
-			try
-			{
-				DirectoryEntry entry = new DirectoryEntry("GC://RootDSE");
-				this.textBoxGC.Text = entry.Properties["dnsHostName"][0].ToString();
-			}
-			catch (Exception)
-			{
-			}
-			if (this.textBoxGC.Text.Length > 0)
-			{
-				this.ReadOABs();
-			}
-		}
+            if (gcName == "")
+            {
+                try
+                {
+                    DirectoryEntry entry = new DirectoryEntry("GC://RootDSE");
+                    this.textBoxGC.Text = entry.Properties["dnsHostName"][0].ToString();
+                }
+                catch (Exception)
+                {
+                }
+            }
+            else
+            {
+                startImmediately = true;
+                this.textBoxGC.Text = gcName;
+            }
+
+            if (this.textBoxGC.Text.Length > 0)
+            {
+                this.ReadOABs();
+            }
+
+            if (startImmediately)
+            {
+                this.HandleCreated += new EventHandler(Form1_HandleCreated);
+            }
+        }
+
+        void Form1_HandleCreated(object sender, EventArgs e)
+        {
+            StartValidationThread();
+        }
 
         private int ObjectsFound
         {
@@ -191,6 +215,11 @@ namespace OABValidate
             this.buttonGo.Enabled = enabled;
         }
 
+        private void SetButtonGetOABsEnabled(bool enabled)
+        {
+            this.buttonGetOABs.Enabled = enabled;
+        }
+
 		private void buttonGetOABs_Click(object sender, EventArgs e)
 		{
 			this.ReadOABs();
@@ -198,13 +227,20 @@ namespace OABValidate
 
 		private void buttonGo_Click(object sender, EventArgs e)
 		{
-			this.buttonGo.Enabled = false;
-			new Thread(new ThreadStart(this.Go)).Start();
+            this.StartValidationThread();
 		}
+
+        private void StartValidationThread()
+        {
+            this.buttonGo.Enabled = false;
+            this.buttonGetOABs.Enabled = false;
+            new Thread(new ThreadStart(this.Go)).Start();
+        }
 
 		private void Go()
 		{
             SetBoolCallback setButtonGoEnabledCallback = new SetBoolCallback(this.SetButtonGoEnabled);
+            SetBoolCallback setButtonGetOABsEnabledCallback = new SetBoolCallback(this.SetButtonGetOABsEnabled);
             try
             {
                 DateTime now = DateTime.Now;
@@ -229,6 +265,7 @@ namespace OABValidate
                 int objectsProcessed = 0;
                 int problemObjects = 0;
                 Dictionary<string, int> problemAttributes = new Dictionary<string,int>();
+                Queue<string> goodDNs = new Queue<string>();
 #if DEBUG
                 this.log("WARNING! This is a DEBUG build and will generate a lot of FALSE failures for testing purposes. Importing the LDIF file will mess up perfectly good objects!");
 #endif
@@ -332,7 +369,24 @@ namespace OABValidate
                                 List<string> badValues = new List<string>();
                                 foreach (string dn in values)
                                 {
-                                    string validationResult = ValidateDn(dn);
+                                    string validationResult;
+                                    if (goodDNs.Contains(dn))
+                                    {
+                                        validationResult = "";
+                                    }
+                                    else
+                                    {
+                                        validationResult = ValidateDn(dn);
+                                        if (validationResult == "")
+                                        {
+                                            goodDNs.Enqueue(dn);
+                                            if (goodDNs.Count > 10000)
+                                            {
+                                                goodDNs.Dequeue();
+                                            }
+                                        }
+                                    }
+
                                     if (validationResult != "")
                                     {
                                         // The DN did not resolve
@@ -476,7 +530,13 @@ namespace OABValidate
             }
 			this.log("");
 			this.log("Finished.");
+            foreach (string domain in domainConnections.Keys)
+            {
+                domainConnections[domain].Dispose();
+            }
+            domainConnections.Clear();
             this.Invoke(setButtonGoEnabledCallback, true);
+            this.Invoke(setButtonGetOABsEnabledCallback, true);
         }
 
         enum LinkCheckResult
@@ -485,6 +545,8 @@ namespace OABValidate
             LingeringLink,
             LingeringObject
         }
+
+        Dictionary<string, LdapConnection> domainConnections = new Dictionary<string, LdapConnection>();
 
         private LinkCheckResult CheckForLingeringLink(string objectDN, Attribute attribute, string link)
         {
@@ -503,9 +565,20 @@ namespace OABValidate
             LinkCheckResult returnValue;
             string domainNC = objectDN.Substring(objectDN.IndexOf("DC="));
             string domain = domainNC.Replace(",DC=", ".").Substring(3);
-            LdapConnection domainConnection = new LdapConnection(domain + ":389");
-            domainConnection.Timeout = TimeSpan.FromMinutes(5);
-            domainConnection.Bind();
+            LdapConnection domainConnection;
+            if (domainConnections.ContainsKey(domain))
+            {
+                domainConnection = domainConnections[domain];
+            }
+            else
+            {
+                domainConnection = new LdapConnection(domain + ":389");
+                domainConnection.Timeout = TimeSpan.FromMinutes(5);
+                domainConnection.SessionOptions.AutoReconnect = true;
+                domainConnection.AutoBind = true;
+                domainConnections.Add(domain, domainConnection);
+            }
+
             SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, this.proplist);
             SearchResponse response = domainConnection.SendRequest(request) as SearchResponse;
             if (response.Entries.Count < 1)
@@ -535,7 +608,6 @@ namespace OABValidate
                     returnValue = LinkCheckResult.LingeringLink;
             }
 
-            domainConnection.Dispose();
             return returnValue;
         }
 
