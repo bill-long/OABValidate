@@ -20,7 +20,20 @@ namespace OABValidate
             }
             else
             {
-                Application.Run(new Form1(args[0]));
+                string gcName = args[0];
+                string customFilter = null;
+                string customPropList = null;
+                if (args.Length > 1)
+                {
+                    customFilter = args[1];
+                }
+
+                if (args.Length > 2)
+                {
+                    customPropList = args[2];
+                }
+
+                Application.Run(new Form1(gcName, customFilter, customPropList));
             }
 		}
 	}

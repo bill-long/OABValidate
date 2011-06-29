@@ -20,7 +20,7 @@ namespace OABValidate
             public bool IsBacklink;
         }
 
-        Attribute[] attList = new Attribute[] {
+        Attribute[] defaultAttList = new Attribute[] {
             new Attribute() { Name = "altRecipient", IsBacklink = false },
             new Attribute() { Name = "altRecipientBL", IsBacklink = true },
             new Attribute() { Name = "assistant", IsBacklink = false },
@@ -66,7 +66,7 @@ namespace OABValidate
             new Attribute() { Name = "unAuthOrigBL", IsBacklink = true }
         };
 
-        string[] proplist = new string[] { 
+        string[] defaultProplist = new string[] { 
         "altRecipient", 
         "altRecipientBL", 
         "assistant", 
@@ -118,21 +118,24 @@ namespace OABValidate
         int problemObjects = 0;
         string logFile = "";
         bool startImmediately = false;
+        string customFilter = null;
+        string[] customPropList = null;
+        Attribute[] customAttributeList = null;
         delegate void SetIntCallback(int integer);
         delegate void LogTextCallback(string text);
         delegate void SetBoolCallback(bool boolean);
 
-		public Form1() : this("")
+		public Form1() : this(null, null, null)
 		{
 		}
 
-        public Form1(string gcName)
+        public Form1(string gcName, string customFilter, string customPropList)
         {
             this.InitializeComponent();
 #if DEBUG
             this.Text = "OABValidate DEBUG BUILD";
 #endif
-            if (gcName == "")
+            if (gcName == null)
             {
                 try
                 {
@@ -147,6 +150,21 @@ namespace OABValidate
             {
                 startImmediately = true;
                 this.textBoxGC.Text = gcName;
+            }
+
+            if (customFilter != null)
+            {
+                this.customFilter = customFilter;
+            }
+
+            if (customPropList != null)
+            {
+                this.customPropList = customPropList.Split(new char[] { ',' });
+                this.customAttributeList = new Attribute[this.customPropList.Length];
+                for (int x = 0; x < this.customPropList.Length; x++)
+                {
+                    this.customAttributeList[x] = new Attribute { Name = this.customPropList[x], IsBacklink = false };
+                }
             }
 
             if (this.textBoxGC.Text.Length > 0)
@@ -252,7 +270,7 @@ namespace OABValidate
             {
                 DateTime now = DateTime.Now;
                 string dateTimeString = now.Year.ToString() + now.Month.ToString("D2") + now.Day.ToString("D2") + now.Hour.ToString("D2") + now.Minute.ToString("D2") + now.Second.ToString("D2");
-                string logPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal) + "\\OABValidate\\" + dateTimeString;
+                string logPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal) + "\\OABValidate\\" + dateTimeString + "-" + this.textBoxGC.Text;
                 if (System.IO.Directory.Exists(logPath))
                 {
                     throw new Exception("Folder already exists: " + logPath + "\nPlease delete any files out of the OABValidate folder and try again.");
@@ -277,58 +295,80 @@ namespace OABValidate
                 this.log("WARNING! This is a DEBUG build and will generate a lot of FALSE failures for testing purposes. Importing the LDIF file will mess up perfectly good objects!");
 #endif
                 this.log("Files will be written to: " + logPath);
-                this.log("Validating objects in OABs: ");
-                foreach (ListViewItem oabItem in listViewChooseOAB.CheckedItems)
-                {
-                    this.log("     " + oabItem.Text);
-                }
 
-                this.log("These OABs include the following address lists:");
-                // We're going to read the address list from each OAB and then combine them
-                // This way we won't add the filter twice if the address list appears twice
-                List<DirectoryEntry> addressListEntries = new List<DirectoryEntry>();
-                List<string> addressListDns = new List<string>();
-                foreach (ListViewItem oabItem in listViewChooseOAB.CheckedItems)
+                string filter;
+                if (customFilter == null)
                 {
-                    // Can't read offlineABContainers from the GC port, have to use LDAP
-                    var oabItemEntry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/" + oabItem.Tag.ToString());
-                    foreach (object addressListDnEntry in oabItemEntry.Properties["offlineABContainers"])
+                    this.log("Validating objects in OABs: ");
+                    foreach (ListViewItem oabItem in listViewChooseOAB.CheckedItems)
                     {
-                        string addressListDn = addressListDnEntry.ToString();
-                        if (!(addressListDns.Contains(addressListDn)))
+                        this.log("     " + oabItem.Text);
+                    }
+
+                    this.log("These OABs include the following address lists:");
+                    // We're going to read the address list from each OAB and then combine them
+                    // This way we won't add the filter twice if the address list appears twice
+                    List<DirectoryEntry> addressListEntries = new List<DirectoryEntry>();
+                    List<string> addressListDns = new List<string>();
+                    foreach (ListViewItem oabItem in listViewChooseOAB.CheckedItems)
+                    {
+                        // Can't read offlineABContainers from the GC port, have to use LDAP
+                        var oabItemEntry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/" + oabItem.Tag.ToString());
+                        foreach (object addressListDnEntry in oabItemEntry.Properties["offlineABContainers"])
                         {
-                            addressListDns.Add(addressListDn);
+                            string addressListDn = addressListDnEntry.ToString();
+                            if (!(addressListDns.Contains(addressListDn)))
+                            {
+                                addressListDns.Add(addressListDn);
+                            }
                         }
                     }
-                }
 
-                foreach (string addressListDn in addressListDns)
+                    foreach (string addressListDn in addressListDns)
+                    {
+                        DirectoryEntry addressListEntry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/" + addressListDn);
+                        addressListEntries.Add(addressListEntry);
+                    }
+
+                    foreach (DirectoryEntry addressListEntry in addressListEntries)
+                    {
+                        this.log("     " + addressListEntry.Properties["cn"][0].ToString());
+                    }
+
+                    // Build the filter to query for everyone in these address lists
+                    List<string> addressListFilters = new List<string>();
+                    foreach (DirectoryEntry addressListEntry in addressListEntries)
+                    {
+                        addressListFilters.Add(addressListEntry.Properties["purportedSearch"][0].ToString());
+                    }
+
+                    StringBuilder filterBuilder = new StringBuilder();
+                    filterBuilder.Append("(|");
+                    foreach (DirectoryEntry addressListEntry in addressListEntries)
+                    {
+                        filterBuilder.Append(addressListEntry.Properties["purportedSearch"][0].ToString());
+                    }
+
+                    filterBuilder.Append(")");
+                    filter = filterBuilder.ToString();
+                }
+                else
                 {
-                    DirectoryEntry addressListEntry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/" + addressListDn);
-                    addressListEntries.Add(addressListEntry);
+                    filter = this.customFilter;
                 }
 
-                foreach (DirectoryEntry addressListEntry in addressListEntries)
+                Attribute[] attributeListToUse;
+                string[] propListToUse;
+                if (this.customPropList == null)
                 {
-                    this.log("     " + addressListEntry.Properties["cn"][0].ToString());
+                    attributeListToUse = this.defaultAttList;
+                    propListToUse = this.defaultProplist;
                 }
-
-                // Build the filter to query for everyone in these address lists
-                List<string> addressListFilters = new List<string>();
-                foreach (DirectoryEntry addressListEntry in addressListEntries)
+                else
                 {
-                    addressListFilters.Add(addressListEntry.Properties["purportedSearch"][0].ToString());
+                    attributeListToUse = this.customAttributeList;
+                    propListToUse = this.customPropList;
                 }
-
-                StringBuilder filterBuilder = new StringBuilder();
-                filterBuilder.Append("(|");
-                foreach (DirectoryEntry addressListEntry in addressListEntries)
-                {
-                    filterBuilder.Append(addressListEntry.Properties["purportedSearch"][0].ToString());
-                }
-
-                filterBuilder.Append(")");
-                string filter = filterBuilder.ToString();
 
                 this.log("");
                 this.log("Filter: " + filter);
@@ -342,7 +382,7 @@ namespace OABValidate
                 LdapConnection connection = new LdapConnection(this.textBoxGC.Text + ":3268");
                 connection.Timeout = TimeSpan.FromMinutes(5);
                 connection.Bind();
-                SearchRequest request = new SearchRequest("", filter, System.DirectoryServices.Protocols.SearchScope.Subtree, this.proplist);
+                SearchRequest request = new SearchRequest("", filter, System.DirectoryServices.Protocols.SearchScope.Subtree, propListToUse);
                 prc = new PageResultRequestControl(pageSize);
                 request.Controls.Add(prc);
 
@@ -366,7 +406,7 @@ namespace OABValidate
                         bool thisObjectIsWrittenToImportFile = false;
                         bool foundBadAttribute = false;
 
-                        foreach (Attribute attribute in this.attList)
+                        foreach (Attribute attribute in attributeListToUse)
                         {
                             // We don't check backlinks anymore, because it shouldn't be possible to have a bad
                             // DN in a backlink.
@@ -521,8 +561,9 @@ namespace OABValidate
                 statsWriter.Close();
 
                 this.log("");
-                this.log(this.ProblemObjects.ToString() + " objects had unresolvable DNs.");
-
+                this.log(objectsFound.ToString() + " objects were processed.");
+                this.log(problemObjects.ToString() + " objects had unresolvable DNs.");
+                
                 if (foundLingeringLinksOrObjects)
                 {
                     this.log("WARNING! Lingering links were found. Please use the log or the CSV to");
@@ -586,7 +627,7 @@ namespace OABValidate
                 domainConnections.Add(domain, domainConnection);
             }
 
-            SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, this.proplist);
+            SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, attribute.Name);
             SearchResponse response = domainConnection.SendRequest(request) as SearchResponse;
             if (response.Entries.Count < 1)
             {
