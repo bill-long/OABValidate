@@ -628,8 +628,22 @@ namespace OABValidate
             }
 
             SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, attribute.Name);
-            SearchResponse response = domainConnection.SendRequest(request) as SearchResponse;
-            if (response.Entries.Count < 1)
+            SearchResponse response = null;
+            try
+            {
+                response = domainConnection.SendRequest(request) as SearchResponse;
+            }
+            catch (Exception)
+            {
+                // We interpret any error here as a lingering object. However, this could happen
+                // for other reasons, such as not being able to contact a DC for that domain.
+                // This shouldn't be a problem since the user is required to manually correct
+                // lingering objects anyway - he or she will undoubtedly identify the real
+                // problem when the lingering object error is manually investigated.
+                returnValue = LinkCheckResult.LingeringObject;
+            }
+
+            if (response != null && response.Entries.Count < 1)
             {
                 returnValue = LinkCheckResult.LingeringObject;
             }
