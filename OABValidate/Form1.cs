@@ -574,6 +574,7 @@ namespace OABValidate
             {
                 this.log("Exception: " + exception.Message);
                 this.log("Stack: " + exception.StackTrace);
+                this.log(exception.ToString());
                 this.log("Operation aborted.");
             }
 			this.log("");
@@ -643,7 +644,11 @@ namespace OABValidate
                 returnValue = LinkCheckResult.LingeringObject;
             }
 
-            if (response != null && response.Entries.Count < 1)
+            if (response == null || response.Entries == null)
+            {
+                returnValue = LinkCheckResult.LingeringObject;
+            }
+            else if (response.Entries.Count < 1)
             {
                 returnValue = LinkCheckResult.LingeringObject;
             }
