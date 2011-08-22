@@ -124,6 +124,14 @@ namespace OABValidate
         delegate void SetIntCallback(int integer);
         delegate void LogTextCallback(string text);
         delegate void SetBoolCallback(bool boolean);
+        Queue<string> goodGuids = new Queue<string>();
+        Queue<string> goodDNs = new Queue<string>();
+        Dictionary<string, LdapConnection> domainConnections = new Dictionary<string, LdapConnection>();
+        string linkCheckCachedObject = "";
+        string linkCheckCachedAttribute = "";
+        List<string> linkCheckCachedAttributeValues = new List<string>();
+        bool debugLogging = false;
+        bool generateRandomFailures = false;
 
 		public Form1() : this(null, null, null)
 		{
@@ -135,6 +143,28 @@ namespace OABValidate
 #if DEBUG
             this.Text = "OABValidate DEBUG BUILD";
 #endif
+            try
+            {
+                string debugLoggingSetting = System.Configuration.ConfigurationManager.AppSettings["DebugLogging"];
+                if (debugLoggingSetting != null)
+                {
+                    debugLogging = bool.Parse(debugLoggingSetting);
+                    richTextBox1.AppendText("DebugLogging is TRUE\n");
+                }
+                string generateRandomFailuresSetting = System.Configuration.ConfigurationManager.AppSettings["GenerateRandomFailures"];
+                if (generateRandomFailuresSetting != null)
+                {
+                    generateRandomFailures = bool.Parse(generateRandomFailuresSetting);
+                    richTextBox1.AppendText("GenerateRandomFailures is TRUE\n");
+                }
+            }
+            catch (Exception exc)
+            {
+                this.log("Exception encountered reading configuration file.");
+                this.log("Any settings in the file will be ignored.");
+                this.log(exc.ToString());
+            }
+
             if (gcName == null)
             {
                 try
@@ -270,6 +300,11 @@ namespace OABValidate
             {
                 DateTime now = DateTime.Now;
                 string dateTimeString = now.Year.ToString() + now.Month.ToString("D2") + now.Day.ToString("D2") + now.Hour.ToString("D2") + now.Minute.ToString("D2") + now.Second.ToString("D2");
+                if (debugLogging)
+                {
+                    DebugLog("Starting at " + dateTimeString + " using GC " + this.textBoxGC.Text);
+                }
+
                 string logPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal) + "\\OABValidate\\" + dateTimeString + "-" + this.textBoxGC.Text;
                 if (System.IO.Directory.Exists(logPath))
                 {
@@ -290,10 +325,7 @@ namespace OABValidate
                 int objectsProcessed = 0;
                 int problemObjects = 0;
                 Dictionary<string, int> problemAttributes = new Dictionary<string,int>();
-                Queue<string> goodDNs = new Queue<string>();
-#if DEBUG
-                this.log("WARNING! This is a DEBUG build and will generate a lot of FALSE failures for testing purposes. Importing the LDIF file will mess up perfectly good objects!");
-#endif
+
                 this.log("Files will be written to: " + logPath);
 
                 string filter;
@@ -374,8 +406,6 @@ namespace OABValidate
                 this.log("Filter: " + filter);
                 this.log("Validating objects...");
 
-                PageResultRequestControl prc = null;
-
                 bool foundLingeringLinksOrObjects = false;
 
                 int pageSize = 1000;
@@ -383,7 +413,9 @@ namespace OABValidate
                 connection.Timeout = TimeSpan.FromMinutes(5);
                 connection.Bind();
                 SearchRequest request = new SearchRequest("", filter, System.DirectoryServices.Protocols.SearchScope.Subtree, propListToUse);
-                prc = new PageResultRequestControl(pageSize);
+                ExtendedDNControl edc = new System.DirectoryServices.Protocols.ExtendedDNControl(ExtendedDNFlag.StandardString);
+                request.Controls.Add(edc);
+                PageResultRequestControl prc = new PageResultRequestControl(pageSize);
                 request.Controls.Add(prc);
 
                 do
@@ -403,6 +435,11 @@ namespace OABValidate
 
                     foreach (SearchResultEntry entry in response.Entries)
                     {
+                        if (debugLogging)
+                        {
+                            DebugLog("Evaluating object: " + entry.DistinguishedName);
+                        }
+
                         bool thisObjectIsWrittenToImportFile = false;
                         bool foundBadAttribute = false;
 
@@ -414,35 +451,17 @@ namespace OABValidate
                             {
                                 string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
                                 List<string> badValues = new List<string>();
-                                foreach (string dn in values)
+                                foreach (string guidDnString in values)
                                 {
-                                    string validationResult;
-                                    if (goodDNs.Contains(dn))
+                                    ValidationResult validationResult = ValidateLink(entry.DistinguishedName.Substring(entry.DistinguishedName.LastIndexOf(';') + 1), attribute, guidDnString);
+                                    if (validationResult != ValidationResult.Good)
                                     {
-                                        validationResult = "";
-                                    }
-                                    else
-                                    {
-                                        validationResult = ValidateDn(dn);
-                                        if (validationResult == "")
-                                        {
-                                            goodDNs.Enqueue(dn);
-                                            if (goodDNs.Count > 10000)
-                                            {
-                                                goodDNs.Dequeue();
-                                            }
-                                        }
-                                    }
-
-                                    if (validationResult != "")
-                                    {
-                                        // The DN did not resolve
                                         if (!foundBadAttribute)
                                         {
                                             // This means this is the first attribute for this object that has failed
                                             // So we need to output the DN
                                             
-                                            this.log(entry.DistinguishedName);
+                                            this.log(entry.DistinguishedName.Substring(entry.DistinguishedName.LastIndexOf(';') + 1));
                                             foundBadAttribute = true;
                                             problemObjects++;
                                             this.Invoke(setProblemObjectsCallback, problemObjects);
@@ -451,26 +470,20 @@ namespace OABValidate
                                         // Log it
                                         this.log("     " + attribute.Name + " " + validationResult);
 
-                                        // Now we need to determine if this is a lingering link or not. A lingering link
-                                        // is when we have a bad DN in a linked attribute when looking at this object on
-                                        // the GC, but that same bad value is not present when looking at it on a DC
-                                        // (i.e. a writable copy of the domain). A lingering link cannot be fixed by
-                                        // ldifde import and needs to be flagged in the log and the tab-delimited file.
-                                        LinkCheckResult linkCheckResult = CheckForLingeringLink(entry.DistinguishedName, attribute, dn);
-                                        if (linkCheckResult == LinkCheckResult.LingeringLink)
+                                        if (validationResult == ValidationResult.LingeringLink)
                                         {
                                             this.log("          Warning! This appears to be a lingering link and cannot be fixed by the import file.");
                                         }
-                                        else if (linkCheckResult == LinkCheckResult.LingeringObject)
+                                        else if (validationResult == ValidationResult.LingeringObject)
                                         {
                                             this.log("          Warning! This appears to be a lingering object and cannot be fixed by the import file.");
                                         }
 
-                                        if (linkCheckResult == LinkCheckResult.NormalLink)
+                                        if (validationResult != ValidationResult.LingeringLink && validationResult != ValidationResult.LingeringObject)
                                         {
                                             // Add it to the bad values for this attribute in case this is multivalued
                                             // We use this when we write the ldf file
-                                            badValues.Add(dn);
+                                            badValues.Add(guidDnString);
                                         }
                                         else
                                         {
@@ -479,7 +492,7 @@ namespace OABValidate
 
                                         // Write it to the tab-delimited file
                                         StreamWriter tsvWriter = new StreamWriter(logPath + "\\ProblemAttributes.txt", true);
-                                        tsvWriter.WriteLine(entry.DistinguishedName + "\t" + attribute.Name + "\t" + linkCheckResult.ToString() + "\t" + dn);
+                                        tsvWriter.WriteLine(entry.DistinguishedName + "\t" + attribute.Name + "\t" + validationResult + "\t" + guidDnString);
                                         tsvWriter.Close();
 
                                         // Add it to the collection we use for statistics
@@ -502,7 +515,7 @@ namespace OABValidate
 
                                     if (!thisObjectIsWrittenToImportFile)
                                     {
-                                        importWriter.WriteLine("dn: " + entry.DistinguishedName);
+                                        importWriter.WriteLine("dn: " + entry.DistinguishedName.Substring(entry.DistinguishedName.LastIndexOf(';') + 1));
                                         importWriter.WriteLine("changetype: modify");
                                         thisObjectIsWrittenToImportFile = true;
                                     }
@@ -516,7 +529,9 @@ namespace OABValidate
                                             {
                                                 if (!badValues.Contains(val))
                                                 {
-                                                    importWriter.WriteLine(attribute.Name + ": " + val);
+                                                    string[] valSplit = val.Split(new char[] { ';' });
+                                                    string valDn = valSplit[valSplit.Length - 1];
+                                                    importWriter.WriteLine(attribute.Name + ": " + valDn);
                                                 }
                                             }
                                             importWriter.WriteLine("-");
@@ -566,14 +581,12 @@ namespace OABValidate
                 
                 if (foundLingeringLinksOrObjects)
                 {
-                    this.log("WARNING! Lingering links were found. Please use the log or the CSV to");
-                    this.log("     identify and correct them. They cannot be corrected with the import file.");
+                    this.log("WARNING! Lingering links were found. Please use the log or the tab-delimited file");
+                    this.log("     to identify and correct them. They cannot be corrected with the import file.");
                 }
             }
             catch (Exception exception)
             {
-                this.log("Exception: " + exception.Message);
-                this.log("Stack: " + exception.StackTrace);
                 this.log(exception.ToString());
                 this.log("Operation aborted.");
             }
@@ -584,6 +597,11 @@ namespace OABValidate
                 domainConnections[domain].Dispose();
             }
             domainConnections.Clear();
+            goodDNs.Clear();
+            goodGuids.Clear();
+            linkCheckCachedObject = "";
+            linkCheckCachedAttribute = "";
+            linkCheckCachedAttributeValues.Clear();
             this.Invoke(setButtonGoEnabledCallback, true);
             this.Invoke(setButtonGetOABsEnabledCallback, true);
         }
@@ -592,25 +610,61 @@ namespace OABValidate
         {
             NormalLink,
             LingeringLink,
-            LingeringObject
+            LingeringObject,
+            LdapException
         }
-
-        Dictionary<string, LdapConnection> domainConnections = new Dictionary<string, LdapConnection>();
 
         private LinkCheckResult CheckForLingeringLink(string objectDN, Attribute attribute, string link)
         {
-#if DEBUG
-            Random rand = new Random();
-            int randomNumber = rand.Next(10);
-            if (randomNumber < 1)
+            if (debugLogging)
             {
-                return LinkCheckResult.LingeringLink;
+                DebugLog("CheckForLingeringLink called with:");
+                DebugLog("     objectDN: " + objectDN);
+                DebugLog("    attribute: " + attribute.Name);
+                DebugLog("         link: " + link);
             }
-            if (randomNumber < 2)
+
+            if (generateRandomFailures)
             {
-                return LinkCheckResult.LingeringObject;
+                if (debugLogging)
+                {
+                    DebugLog("Generating random failure in CheckForLingeringLink.");
+                }
+
+                Random rand = new Random();
+                int randomNumber = rand.Next(10);
+                if (randomNumber < 1)
+                {
+                    return LinkCheckResult.LingeringLink;
+                }
+                if (randomNumber < 2)
+                {
+                    return LinkCheckResult.LingeringObject;
+                }
             }
-#endif
+
+            if (linkCheckCachedObject == objectDN && linkCheckCachedAttribute == attribute.Name)
+            {
+                if (linkCheckCachedAttributeValues.Contains(link))
+                {
+                    if (debugLogging)
+                    {
+                        DebugLog("Link check was satisfied from cache as NormalLink.");
+                    }
+
+                    return LinkCheckResult.NormalLink;
+                }
+                else
+                {
+                    if (debugLogging)
+                    {
+                        DebugLog("Link check was satisfied from cache as LingeringLink.");
+                    }
+
+                    return LinkCheckResult.LingeringLink;
+                }
+            }
+
             LinkCheckResult returnValue;
             string domainNC = objectDN.Substring(objectDN.IndexOf("DC="));
             string domain = domainNC.Replace(",DC=", ".").Substring(3);
@@ -629,95 +683,273 @@ namespace OABValidate
             }
 
             SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, attribute.Name);
+            ExtendedDNControl edc = new ExtendedDNControl(ExtendedDNFlag.StandardString);
+            request.Controls.Add(edc);
             SearchResponse response = null;
             try
             {
                 response = domainConnection.SendRequest(request) as SearchResponse;
+                if (response == null || response.Entries == null)
+                {
+                    if (debugLogging)
+                    {
+                        if (response == null)
+                        {
+                            DebugLog("response was null.");
+                        }
+                        else
+                        {
+                            DebugLog("Entries was null. Response ResultCode is: " + response.ResultCode);
+                        }
+                    }
+
+                    returnValue = LinkCheckResult.LingeringObject;
+                }
+                else if (response.Entries.Count < 1)
+                {
+                    if (debugLogging)
+                    {
+                        DebugLog("There were 0 Entries. Response ResultCode is: " + response.ResultCode);
+                    }
+
+                    returnValue = LinkCheckResult.LingeringObject;
+                }
+                else
+                {
+                    bool linkIsNormal = false;
+                    SearchResultEntry entry = response.Entries[0];
+                    if (entry.Attributes.Contains(attribute.Name))
+                    {
+                        string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
+                        if (values.Length > 1)
+                        {
+                            linkCheckCachedObject = objectDN;
+                            linkCheckCachedAttribute = attribute.Name;
+                            linkCheckCachedAttributeValues.Clear();
+                            linkCheckCachedAttributeValues.AddRange(values);
+                            
+                            if (debugLogging)
+                            {
+                                DebugLog("Attribute is now cached.");
+                            }
+
+                            if (linkCheckCachedAttributeValues.Contains(link))
+                            {
+                                linkIsNormal = true;
+                            }
+                        }
+                        else
+                        {
+                            if (values[0] == link)
+                            {
+                                linkIsNormal = true;
+                            }
+                        }
+                    }
+
+                    if (linkIsNormal)
+                        returnValue = LinkCheckResult.NormalLink;
+                    else
+                        returnValue = LinkCheckResult.LingeringLink;
+                }
             }
-            catch (Exception)
+            catch (LdapException)
             {
+                // We couldn't contact a writable DC for the domain for some reason.
+                returnValue = LinkCheckResult.LdapException;
+            }
+            catch (Exception exc)
+            {
+                if (debugLogging)
+                {
+                    DebugLog("CheckForLingeringLink encountered exception at domainConnection.SendRequest():");
+                    DebugLog(exc.ToString());
+                }
+
                 // We interpret any error here as a lingering object. However, this could happen
-                // for other reasons, such as not being able to contact a DC for that domain.
+                // for other reasons.
                 // This shouldn't be a problem since the user is required to manually correct
                 // lingering objects anyway - he or she will undoubtedly identify the real
                 // problem when the lingering object error is manually investigated.
                 returnValue = LinkCheckResult.LingeringObject;
             }
 
-            if (response == null || response.Entries == null)
+            if (debugLogging)
             {
-                returnValue = LinkCheckResult.LingeringObject;
-            }
-            else if (response.Entries.Count < 1)
-            {
-                returnValue = LinkCheckResult.LingeringObject;
-            }
-            else
-            {
-                bool linkIsNormal = false;
-                SearchResultEntry entry = response.Entries[0];
-                if (entry.Attributes.Contains(attribute.Name))
-                {
-                    string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
-                    foreach (string val in values)
-                    {
-                        if (val == link)
-                        {
-                            linkIsNormal = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (linkIsNormal)
-                    returnValue = LinkCheckResult.NormalLink;
-                else
-                    returnValue = LinkCheckResult.LingeringLink;
+                DebugLog("Returning from CheckForLingeringLink with result: " + returnValue);
             }
 
             return returnValue;
         }
 
-        private string ValidateDn(string dn)
+        private enum ValidationResult
         {
-#if DEBUG
-            Random rand = new Random();
-            int randomNumber = rand.Next(100);
-            if ((randomNumber % 2) == 0)
+            Good,
+            NullValue,
+            UnresolvableDN,
+            ObjectGuidMismatch,
+            LingeringLink,
+            LingeringObject,
+            LdapException,
+            SimulatedDebugFailure
+        }
+
+        private ValidationResult ValidateLink(string objectDN, Attribute attribute, string link)
+        {
+            // Because of the ExtendedDNControl, all DN values will come back in the format:
+            // <GUID=nnnn>;<SID=nnnn>;DN=whatever
+            // SID is only present for security principals.
+            // See http://msdn.microsoft.com/en-us/library/aa366980(VS.85).aspx
+            // This is necessary so we can catch lingering links where an object with the
+            // same DN has been created, but has a different GUID than what is present in
+            // the DN-valued attribute.
+            string[] guidDnStringSplit = link.Split(new char[] { ';' });
+            string guidString;
+            string dnString;
+            if (guidDnStringSplit.Length > 1)
             {
-                return "Simulated failure for debug.";
+                guidString = guidDnStringSplit[0].Substring(6).TrimEnd(new char[] { '>' });
+                dnString = guidDnStringSplit[guidDnStringSplit.Length - 1];
             }
-#endif
+            else
+            {
+                guidString = "";
+                dnString = link;
+            }
+
+            if (debugLogging)
+            {
+                DebugLog("ValidateLink called for link: " + link);
+                DebugLog("     Guid: " + guidString);
+                DebugLog("       Dn: " + dnString);
+
+                if (generateRandomFailures)
+                {
+                    if (debugLogging)
+                    {
+                        DebugLog("Generating random failure in ValidateLink.");
+                    }
+
+                    Random rand = new Random();
+                    int randomNumber = rand.Next(100);
+                    if ((randomNumber % 20) == 0)
+                    {
+                        return ValidationResult.SimulatedDebugFailure;
+                    }
+                }
+            }
+            if (guidString != "" && goodGuids.Contains(guidString))
+            {
+                return ValidationResult.Good;
+            }
+            else if (guidString == "" && goodDNs.Contains(dnString))
+            {
+                return ValidationResult.Good;
+            }
+
             bool isValidDn = false;
+            bool guidMatches = false;
             try
             {
-                if (dn != "")
+                if (dnString != "")
                 {
-                    string escapedDn = dn.Replace("/", @"\/");
+                    string escapedDn = dnString.Replace("/", @"\/");
                     DirectoryEntry testEntry = new DirectoryEntry("GC://" + this.textBoxGC.Text + "/" + escapedDn);
                     string testDn = testEntry.Properties["distinguishedName"][0].ToString();
                     isValidDn = true;
+                    // The DN resolved, but is this really the same object? Need to check the GUID
+                    if (guidString != "")
+                    {
+                        Guid resolvedObjectGuid = new Guid((byte[])testEntry.Properties["objectGUID"][0]);
+
+                        if (debugLogging)
+                        {
+                            DebugLog("Comparing guid: " + guidString + " to resolvedObjectGuid: " + resolvedObjectGuid.ToString());
+                        }
+
+                        if (guidString == resolvedObjectGuid.ToString())
+                        {
+                            guidMatches = true;
+                        }
+                    }
+                    else
+                    {
+                        guidMatches = true;
+                    }
                 }
             }
             catch
             {
             }
 
-            if (!isValidDn)
+            ValidationResult validationResult;
+            if (isValidDn)
             {
-                if (dn == "")
+                if (guidMatches)
                 {
-                    return ("contains null value");
+                    // Now we need to determine if this is a lingering link or not. A lingering link
+                    // is when we have a GUID+DN pair in a linked attribute when looking at this object on
+                    // the GC, but that same value is not present when looking at it on a DC
+                    // (i.e. a writable copy of the domain). A lingering link cannot be fixed by
+                    // ldifde import and needs to be flagged in the log and the tab-delimited file.
+                    LinkCheckResult linkType = CheckForLingeringLink(objectDN, attribute, link);
+                    if (linkType == LinkCheckResult.NormalLink)
+                    {
+                        validationResult = ValidationResult.Good;
+                    }
+                    else if (linkType == LinkCheckResult.LingeringLink)
+                    {
+                        validationResult = ValidationResult.LingeringLink;
+                    }
+                    else if (linkType == LinkCheckResult.LingeringObject)
+                    {
+                        validationResult = ValidationResult.LingeringObject;
+                    }
+                    else if (linkType == LinkCheckResult.LdapException)
+                    {
+                        validationResult = ValidationResult.LdapException;
+                    }
+                    else
+                        throw new Exception("Unhandled link type");
                 }
                 else
                 {
-                    return ("contains unresolvable DN: " + dn);
+                    validationResult = ValidationResult.ObjectGuidMismatch;
                 }
             }
             else
             {
-                return "";
+                if (dnString == "")
+                {
+                    validationResult = ValidationResult.NullValue;
+                }
+                else
+                {
+                    validationResult = ValidationResult.UnresolvableDN;
+                }
             }
+
+            if (validationResult == ValidationResult.Good)
+            {
+                if (guidString != "")
+                {
+                    goodGuids.Enqueue(guidString);
+                    if (goodGuids.Count > 10000)
+                    {
+                        goodGuids.Dequeue();
+                    }
+                }
+                else
+                {
+                    goodDNs.Enqueue(dnString);
+                    if (goodDNs.Count > 10000)
+                    {
+                        goodDNs.Dequeue();
+                    }
+                }
+            }
+
+            return validationResult;
         }
 
 		private void log(string logstring)
@@ -749,5 +981,12 @@ namespace OABValidate
                 this.listViewChooseOAB.Enabled = true;
 			}
 		}
+
+        private void DebugLog(string logstring)
+        {
+            StreamWriter writer = new StreamWriter(@"C:\OabValidateDebug.log", true);
+            writer.WriteLine(logstring);
+            writer.Close();
+        }
 	}
 }
