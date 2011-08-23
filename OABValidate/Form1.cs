@@ -407,6 +407,7 @@ namespace OABValidate
                 this.log("Validating objects...");
 
                 bool foundLingeringLinksOrObjects = false;
+                bool encounteredLdapExceptions = false;
 
                 int pageSize = 1000;
                 LdapConnection connection = new LdapConnection(this.textBoxGC.Text + ":3268");
@@ -473,21 +474,23 @@ namespace OABValidate
                                         if (validationResult == ValidationResult.LingeringLink)
                                         {
                                             this.log("          Warning! This appears to be a lingering link and cannot be fixed by the import file.");
+                                            foundLingeringLinksOrObjects = true;
                                         }
                                         else if (validationResult == ValidationResult.LingeringObject)
                                         {
                                             this.log("          Warning! This appears to be a lingering object and cannot be fixed by the import file.");
+                                            foundLingeringLinksOrObjects = true;
                                         }
-
-                                        if (validationResult != ValidationResult.LingeringLink && validationResult != ValidationResult.LingeringObject)
+                                        else if (validationResult == ValidationResult.LdapException)
+                                        {
+                                            this.log("          Warning! This link could not be validated due to an LdapException. A DC may be unreachable or offline.");
+                                            encounteredLdapExceptions = true;
+                                        }
+                                        else
                                         {
                                             // Add it to the bad values for this attribute in case this is multivalued
                                             // We use this when we write the ldf file
                                             badValues.Add(guidDnString);
-                                        }
-                                        else
-                                        {
-                                            foundLingeringLinksOrObjects = true;
                                         }
 
                                         // Write it to the tab-delimited file
@@ -584,6 +587,13 @@ namespace OABValidate
                     this.log("WARNING! Lingering links were found. Please use the log or the tab-delimited file");
                     this.log("     to identify and correct them. They cannot be corrected with the import file.");
                 }
+
+                if (encounteredLdapExceptions)
+                {
+                    this.log("WARNING! LDAP Exceptions were encountered. This could be due to a network problem");
+                    this.log("     or a domain controller being offline. As a result, some links could not be");
+                    this.log("     validated.");
+                }
             }
             catch (Exception exception)
             {
@@ -626,19 +636,24 @@ namespace OABValidate
 
             if (generateRandomFailures)
             {
-                if (debugLogging)
-                {
-                    DebugLog("Generating random failure in CheckForLingeringLink.");
-                }
-
                 Random rand = new Random();
                 int randomNumber = rand.Next(10);
                 if (randomNumber < 1)
                 {
+                    if (debugLogging)
+                    {
+                        DebugLog("Generating random LingeringLink failure in CheckForLingeringLink.");
+                    }
+
                     return LinkCheckResult.LingeringLink;
                 }
                 if (randomNumber < 2)
                 {
+                    if (debugLogging)
+                    {
+                        DebugLog("Generating random LingeringObject failure in CheckForLingeringLink.");
+                    }
+
                     return LinkCheckResult.LingeringObject;
                 }
             }
@@ -825,15 +840,15 @@ namespace OABValidate
 
                 if (generateRandomFailures)
                 {
-                    if (debugLogging)
-                    {
-                        DebugLog("Generating random failure in ValidateLink.");
-                    }
-
                     Random rand = new Random();
                     int randomNumber = rand.Next(100);
                     if ((randomNumber % 20) == 0)
                     {
+                        if (debugLogging)
+                        {
+                            DebugLog("Generating random failure in ValidateLink.");
+                        }
+
                         return ValidationResult.SimulatedDebugFailure;
                     }
                 }
