@@ -481,6 +481,11 @@ namespace OABValidate
                                             this.log("          Warning! This appears to be a lingering object and cannot be fixed by the import file.");
                                             foundLingeringLinksOrObjects = true;
                                         }
+                                        else if (validationResult == ValidationResult.ObjectGuidMismatch)
+                                        {
+                                            this.log("          Warning! The DN resolves to an object with a different objectGUID! This is probably a lingering link and will not be added to the import file.");
+                                            foundLingeringLinksOrObjects = true;
+                                        }
                                         else if (validationResult == ValidationResult.LdapException)
                                         {
                                             this.log("          Warning! This link could not be validated due to an LdapException. A DC may be unreachable or offline.");
