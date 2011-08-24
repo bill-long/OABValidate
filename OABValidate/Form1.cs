@@ -580,7 +580,7 @@ namespace OABValidate
 
                 this.log("");
                 this.log(objectsFound.ToString() + " objects were processed.");
-                this.log(problemObjects.ToString() + " objects had unresolvable DNs.");
+                this.log(problemObjects.ToString() + " objects had problems.");
                 
                 if (foundLingeringLinksOrObjects)
                 {
