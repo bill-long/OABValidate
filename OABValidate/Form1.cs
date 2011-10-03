@@ -149,13 +149,19 @@ namespace OABValidate
                 if (debugLoggingSetting != null)
                 {
                     debugLogging = bool.Parse(debugLoggingSetting);
-                    richTextBox1.AppendText("DebugLogging is TRUE\n");
+                    if (debugLogging)
+                    {
+                        richTextBox1.AppendText("DebugLogging is " + debugLogging.ToString() + "\n");
+                    }
                 }
                 string generateRandomFailuresSetting = System.Configuration.ConfigurationManager.AppSettings["GenerateRandomFailures"];
                 if (generateRandomFailuresSetting != null)
                 {
                     generateRandomFailures = bool.Parse(generateRandomFailuresSetting);
-                    richTextBox1.AppendText("GenerateRandomFailures is TRUE\n");
+                    if (generateRandomFailures)
+                    {
+                        richTextBox1.AppendText("GenerateRandomFailures is " + generateRandomFailures.ToString() + "\n");
+                    }
                 }
             }
             catch (Exception exc)
@@ -451,6 +457,36 @@ namespace OABValidate
                             if (attribute.Name != "distinguishedName" && !attribute.IsBacklink && entry.Attributes.Contains(attribute.Name))
                             {
                                 string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
+                                if (values.Length == 0)
+                                {
+                                    foreach (string attName in entry.Attributes.AttributeNames)
+                                    {
+                                        if (attName.StartsWith(attribute.Name + ";", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            if (debugLogging)
+                                            {
+                                                DebugLog("Ranged attribute found: " + attName);
+                                            }
+
+                                            values = (string[])entry.Attributes[attName].GetValues(typeof(string));
+
+                                            if (!(attName.EndsWith("*")))
+                                            {
+                                                List<string> allAttributeValues = new List<string>(values);
+                                                allAttributeValues.AddRange(RetrieveAllAttributeValues(connection, entry.DistinguishedName.Substring(entry.DistinguishedName.LastIndexOf(';') + 1), attribute.Name, allAttributeValues.Count));
+                                                values = allAttributeValues.ToArray();
+                                            }
+
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (debugLogging)
+                                {
+                                    DebugLog(values.Length.ToString() + " values in attribute: " + attribute.Name);
+                                }
+
                                 List<string> badValues = new List<string>();
                                 foreach (string guidDnString in values)
                                 {
@@ -669,7 +705,7 @@ namespace OABValidate
                 {
                     if (debugLogging)
                     {
-                        DebugLog("Link check was satisfied from cache as NormalLink.");
+                        DebugLog("Link check was satisfied from attribute cache as NormalLink.");
                     }
 
                     return LinkCheckResult.NormalLink;
@@ -678,7 +714,7 @@ namespace OABValidate
                 {
                     if (debugLogging)
                     {
-                        DebugLog("Link check was satisfied from cache as LingeringLink.");
+                        DebugLog("Link check was satisfied from attribute cache as LingeringLink.");
                     }
 
                     return LinkCheckResult.LingeringLink;
@@ -702,10 +738,15 @@ namespace OABValidate
                 domainConnections.Add(domain, domainConnection);
             }
 
+            linkCheckCachedAttributeValues.Clear();
+            linkCheckCachedObject = "";
+            linkCheckCachedAttribute = "";
+
             SearchRequest request = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base, attribute.Name);
             ExtendedDNControl edc = new ExtendedDNControl(ExtendedDNFlag.StandardString);
             request.Controls.Add(edc);
             SearchResponse response = null;
+
             try
             {
                 response = domainConnection.SendRequest(request) as SearchResponse;
@@ -736,42 +777,63 @@ namespace OABValidate
                 }
                 else
                 {
-                    bool linkIsNormal = false;
                     SearchResultEntry entry = response.Entries[0];
-                    if (entry.Attributes.Contains(attribute.Name))
-                    {
-                        string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
-                        if (values.Length > 1)
-                        {
-                            linkCheckCachedObject = objectDN;
-                            linkCheckCachedAttribute = attribute.Name;
-                            linkCheckCachedAttributeValues.Clear();
-                            linkCheckCachedAttributeValues.AddRange(values);
-                            
-                            if (debugLogging)
-                            {
-                                DebugLog("Attribute is now cached.");
-                            }
 
-                            if (linkCheckCachedAttributeValues.Contains(link))
-                            {
-                                linkIsNormal = true;
-                            }
-                        }
-                        else
+                    if (debugLogging)
+                    {
+                        DebugLog("Response contained " + entry.Attributes.Count.ToString() + " attributes.");
+                    }
+
+                    string[] values = (string[])entry.Attributes[attribute.Name].GetValues(typeof(string));
+                    if (values.Length == 0)
+                    {
+                        foreach (string attName in entry.Attributes.AttributeNames)
                         {
-                            if (values[0] == link)
+                            if (attName.StartsWith(attribute.Name + ";", StringComparison.OrdinalIgnoreCase))
                             {
-                                linkIsNormal = true;
+                                if (debugLogging)
+                                {
+                                    DebugLog("Ranged attribute found: " + attName);
+                                }
+
+                                values = (string[])entry.Attributes[attName].GetValues(typeof(string));
+
+                                if (!(attName.EndsWith("*")))
+                                {
+                                    List<string> allAttributeValues = new List<string>(values);
+                                    allAttributeValues.AddRange(RetrieveAllAttributeValues(domainConnection, objectDN, attribute.Name, allAttributeValues.Count));
+                                    values = allAttributeValues.ToArray();
+                                }
+
+                                break;
                             }
                         }
                     }
 
-                    if (linkIsNormal)
-                        returnValue = LinkCheckResult.NormalLink;
-                    else
-                        returnValue = LinkCheckResult.LingeringLink;
+                    linkCheckCachedAttributeValues.AddRange(values);
                 }
+
+                bool linkIsNormal = false;
+                if (linkCheckCachedAttributeValues.Count > 0)
+                {
+                    linkCheckCachedObject = objectDN;
+                    linkCheckCachedAttribute = attribute.Name;
+
+                    if (debugLogging)
+                    {
+                        DebugLog("Populated attribute cache with " + linkCheckCachedAttributeValues.Count.ToString() + " values for " + attribute.Name + " attribute.");
+                    }
+
+                    if (linkCheckCachedAttributeValues.Contains(link))
+                    {
+                        linkIsNormal = true;
+                    }
+                }
+
+                if (linkIsNormal)
+                    returnValue = LinkCheckResult.NormalLink;
+                else
+                    returnValue = LinkCheckResult.LingeringLink;
             }
             catch (LdapException)
             {
@@ -800,6 +862,83 @@ namespace OABValidate
             }
 
             return returnValue;
+        }
+
+        private List<string> RetrieveAllAttributeValues(LdapConnection connection, string objectDN, string attribute, int startingOffset)
+        {
+            if (debugLogging)
+            {
+                LdapDirectoryIdentifier ldapDirId = connection.Directory as LdapDirectoryIdentifier;
+                DebugLog("Performing ranged retrieval of all values for: ");
+                DebugLog("     object: " + objectDN);
+                DebugLog("     attribute: " + attribute);
+                DebugLog("     server: " + ldapDirId.Servers[0]);
+                DebugLog("     this operation is starting at: " + DateTime.Now.ToLongTimeString());
+            }
+
+            int lowRange = startingOffset;
+            List<string> rangedValues = new List<string>();
+            SearchRequest rangedAttributeRequest = new SearchRequest(objectDN, "(objectClass=*)", System.DirectoryServices.Protocols.SearchScope.Base);
+            ExtendedDNControl edc = new System.DirectoryServices.Protocols.ExtendedDNControl(ExtendedDNFlag.StandardString);
+            rangedAttributeRequest.Controls.Add(edc);
+            string desiredAttribute = "";
+            do
+            {
+                string rangeString = attribute + ";Range=" + lowRange.ToString() + "-*";
+                rangedAttributeRequest.Attributes.Clear();
+                rangedAttributeRequest.Attributes.Add(rangeString);
+                SearchResponse response = connection.SendRequest(rangedAttributeRequest) as SearchResponse;
+                if (response.Entries.Count != 1)
+                {
+                    if (debugLogging)
+                    {
+                        DebugLog("Error in ranged retrieval. Response ResultCode is: " + response.ResultCode);
+                    }
+
+                    break;
+                }
+                else
+                {
+                    desiredAttribute = "";
+                    SearchResultEntry entry = response.Entries[0];
+                    foreach (string attName in entry.Attributes.AttributeNames)
+                    {
+                        if (attName.StartsWith(attribute + ";", StringComparison.OrdinalIgnoreCase))
+                        {
+                            desiredAttribute = attName;
+                        }
+                    }
+
+                    if (desiredAttribute != "")
+                    {
+                        if (debugLogging)
+                        {
+                            DebugLog("Received ranged attribute response: " + desiredAttribute);
+                        }
+
+                        string[] values = (string[])entry.Attributes[desiredAttribute].GetValues(typeof(string));
+                        if (values.Length > 0)
+                        {
+                            rangedValues.AddRange(values);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    lowRange = startingOffset + rangedValues.Count;
+                }
+            }
+            while (!desiredAttribute.EndsWith("*"));
+
+            if (debugLogging)
+            {
+                DebugLog("Ranged retrieval done.");
+                DebugLog("     this operation finished at: " + DateTime.Now.ToLongTimeString());
+            }
+
+            return rangedValues;
         }
 
         private enum ValidationResult
@@ -858,6 +997,7 @@ namespace OABValidate
                     }
                 }
             }
+
             if (guidString != "" && goodGuids.Contains(guidString))
             {
                 return ValidationResult.Good;
