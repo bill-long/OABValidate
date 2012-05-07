@@ -731,7 +731,7 @@ namespace OABValidate
             }
             else
             {
-                domainConnection = new LdapConnection(domain + ":389");
+                domainConnection = new LdapConnection(domain + ":3268");
                 domainConnection.Timeout = TimeSpan.FromMinutes(5);
                 domainConnection.SessionOptions.AutoReconnect = true;
                 domainConnection.AutoBind = true;
