@@ -1125,21 +1125,28 @@ namespace OABValidate
 		private void ReadOABs()
 		{
 			this.listViewChooseOAB.Items.Clear();
-			DirectoryEntry entry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/RootDSE");
-			DirectoryEntry searchRoot = new DirectoryEntry("LDAP://CN=Microsoft Exchange,CN=Services," + entry.Properties["configurationNamingContext"][0].ToString());
-			DirectorySearcher searcher = new DirectorySearcher(searchRoot, "(objectClass=msExchOAB)", new string[] { "cn", "distinguishedName", "offlineABContainers" }, System.DirectoryServices.SearchScope.Subtree);
-			foreach (SearchResult result in searcher.FindAll())
-			{
-				ListViewItem item = new ListViewItem(result.Properties["cn"][0].ToString());
-                item.Tag = result.Properties["distinguishedName"][0].ToString();
-                item.Checked = true;
-				this.listViewChooseOAB.Items.Add(item);
-			}
 
-			if (this.listViewChooseOAB.Items.Count > 0)
-			{
-                this.listViewChooseOAB.Enabled = true;
-			}
+            try
+            {
+                DirectoryEntry entry = new DirectoryEntry("LDAP://" + this.textBoxGC.Text + "/RootDSE");
+                DirectoryEntry searchRoot = new DirectoryEntry("LDAP://CN=Microsoft Exchange,CN=Services," + entry.Properties["configurationNamingContext"][0].ToString());
+                DirectorySearcher searcher = new DirectorySearcher(searchRoot, "(objectClass=msExchOAB)", new string[] { "cn", "distinguishedName", "offlineABContainers" }, System.DirectoryServices.SearchScope.Subtree);
+                foreach (SearchResult result in searcher.FindAll())
+                {
+                    ListViewItem item = new ListViewItem(result.Properties["cn"][0].ToString());
+                    item.Tag = result.Properties["distinguishedName"][0].ToString();
+                    item.Checked = true;
+                    this.listViewChooseOAB.Items.Add(item);
+                }
+
+                if (this.listViewChooseOAB.Items.Count > 0)
+                {
+                    this.listViewChooseOAB.Enabled = true;
+                }
+            }
+            catch
+            {
+            }
 		}
 
         private void DebugLog(string logstring)
