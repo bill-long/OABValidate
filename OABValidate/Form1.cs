@@ -344,7 +344,10 @@ namespace OABValidate
                     foreach (string dcName in dcList.Split(new char[] {','}))
                     {
                         var dcRoot = new DirectoryEntry("LDAP://" + dcName + "/RootDSE");
-                        domainConnectionCache[dcRoot.Properties["defaultNamingContext"].ToString()] = new LdapConnection(dcRoot.Properties["dnsHostName"].ToString());
+                        var namingContext = dcRoot.Properties["defaultNamingContext"][0].ToString();
+                        var dnsHostName = dcRoot.Properties["dnsHostName"][0].ToString();
+                        this.log("Adding specified DC " + dnsHostName + " to connection cache for naming context " + namingContext + ".");
+                        domainConnectionCache[namingContext] = new LdapConnection(dnsHostName);
                     }
                 }
 
