@@ -126,23 +126,26 @@ namespace OABValidate
         delegate void SetBoolCallback(bool boolean);
         Queue<string> goodGuids = new Queue<string>();
         Queue<string> goodDNs = new Queue<string>();
-        Dictionary<string, LdapConnection> domainConnections = new Dictionary<string, LdapConnection>();
+        LdapConnectionCache domainConnectionCache = null;
         string linkCheckCachedObject = "";
         string linkCheckCachedAttribute = "";
         List<string> linkCheckCachedAttributeValues = new List<string>();
         bool debugLogging = false;
         bool generateRandomFailures = false;
+        string dcList = null;
 
-		public Form1() : this(null, null, null)
+		public Form1() : this(null, null, null, null)
 		{
 		}
 
-        public Form1(string gcName, string customFilter, string customPropList)
+        public Form1(string gcName, string customFilter, string customPropList, string dcList)
         {
             this.InitializeComponent();
 #if DEBUG
             this.Text = "OABValidate DEBUG BUILD";
 #endif
+            this.dcList = dcList;
+
             try
             {
                 string debugLoggingSetting = System.Configuration.ConfigurationManager.AppSettings["DebugLogging"];
@@ -154,6 +157,7 @@ namespace OABValidate
                         richTextBox1.AppendText("DebugLogging is " + debugLogging.ToString() + "\n");
                     }
                 }
+
                 string generateRandomFailuresSetting = System.Configuration.ConfigurationManager.AppSettings["GenerateRandomFailures"];
                 if (generateRandomFailuresSetting != null)
                 {
@@ -333,6 +337,16 @@ namespace OABValidate
                 Dictionary<string, int> problemAttributes = new Dictionary<string,int>();
 
                 this.log("Files will be written to: " + logPath);
+
+                domainConnectionCache = new LdapConnectionCache();
+                if (dcList != null)
+                {
+                    foreach (string dcName in dcList.Split(new char[] {','}))
+                    {
+                        var dcRoot = new DirectoryEntry("LDAP://" + dcName + "/RootDSE");
+                        domainConnectionCache[dcRoot.Properties["defaultNamingContext"].ToString()] = new LdapConnection(dcRoot.Properties["dnsHostName"].ToString());
+                    }
+                }
 
                 string filter;
                 if (customFilter == null)
@@ -643,11 +657,8 @@ namespace OABValidate
             }
 			this.log("");
 			this.log("Finished.");
-            foreach (string domain in domainConnections.Keys)
-            {
-                domainConnections[domain].Dispose();
-            }
-            domainConnections.Clear();
+
+            domainConnectionCache.Dispose();
             goodDNs.Clear();
             goodGuids.Clear();
             linkCheckCachedObject = "";
@@ -722,21 +733,7 @@ namespace OABValidate
             }
 
             LinkCheckResult returnValue;
-            string domainNC = objectDN.Substring(objectDN.IndexOf("DC="));
-            string domain = domainNC.Replace(",DC=", ".").Substring(3);
-            LdapConnection domainConnection;
-            if (domainConnections.ContainsKey(domain))
-            {
-                domainConnection = domainConnections[domain];
-            }
-            else
-            {
-                domainConnection = new LdapConnection(domain + ":3268");
-                domainConnection.Timeout = TimeSpan.FromMinutes(5);
-                domainConnection.SessionOptions.AutoReconnect = true;
-                domainConnection.AutoBind = true;
-                domainConnections.Add(domain, domainConnection);
-            }
+            LdapConnection domainConnection = domainConnectionCache[objectDN];
 
             linkCheckCachedAttributeValues.Clear();
             linkCheckCachedObject = "";
