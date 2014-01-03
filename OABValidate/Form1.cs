@@ -133,6 +133,8 @@ namespace OABValidate
         bool debugLogging = false;
         bool generateRandomFailures = false;
         string dcList = null;
+	    private string logFolder = Environment.GetFolderPath(Environment.SpecialFolder.Personal) + "\\OABValidate\\";
+	    private bool configFileError = false;
 
 		public Form1() : this(null, null, null, null)
 		{
@@ -167,12 +169,25 @@ namespace OABValidate
                         richTextBox1.AppendText("GenerateRandomFailures is " + generateRandomFailures.ToString() + "\n");
                     }
                 }
+
+                string logFolderFromConfigFile = System.Configuration.ConfigurationManager.AppSettings["LogFolder"];
+                if (logFolderFromConfigFile != null)
+                {
+                    // logFolder must end in a \
+                    if (!logFolderFromConfigFile.EndsWith("\\"))
+                    {
+                        logFolderFromConfigFile += "\\";
+                    }
+
+                    logFolder = logFolderFromConfigFile;
+                }
             }
             catch (Exception exc)
             {
-                this.log("Exception encountered reading configuration file.");
-                this.log("Any settings in the file will be ignored.");
-                this.log(exc.ToString());
+                this.richTextBox1.AppendText("Exception encountered reading configuration file.\n");
+                this.richTextBox1.AppendText("Any settings in the file will be ignored.\n");
+                this.richTextBox1.AppendText(exc.ToString() + "\n");
+                configFileError = true;
             }
 
             if (gcName == null)
@@ -310,12 +325,7 @@ namespace OABValidate
             {
                 DateTime now = DateTime.Now;
                 string dateTimeString = now.Year.ToString() + now.Month.ToString("D2") + now.Day.ToString("D2") + now.Hour.ToString("D2") + now.Minute.ToString("D2") + now.Second.ToString("D2");
-                if (debugLogging)
-                {
-                    DebugLog("Starting at " + dateTimeString + " using GC " + this.textBoxGC.Text);
-                }
-
-                string logPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal) + "\\OABValidate\\" + dateTimeString + "-" + this.textBoxGC.Text;
+                string logPath = logFolder + dateTimeString + "-" + this.textBoxGC.Text;
                 if (System.IO.Directory.Exists(logPath))
                 {
                     throw new Exception("Folder already exists: " + logPath + "\nPlease delete any files out of the OABValidate folder and try again.");
@@ -323,6 +333,17 @@ namespace OABValidate
 
                 System.IO.Directory.CreateDirectory(logPath);
                 this.logFile = logPath + "\\log.txt";
+                if (debugLogging)
+                {
+                    DebugLog("Starting at " + dateTimeString + " using GC " + this.textBoxGC.Text);
+                }
+
+                if (configFileError)
+                {
+                    log("Exception encountered reading configuration file at startup.\n");
+                    log("Any settings in the file will be ignored.\n");
+                }
+
                 DirectoryEntry searchRoot = new DirectoryEntry("GC://" + this.textBoxGC.Text);
 
                 SetIntCallback setObjectsFoundCallback = new SetIntCallback(this.SetObjectsFound);
@@ -1151,7 +1172,7 @@ namespace OABValidate
 
         private void DebugLog(string logstring)
         {
-            StreamWriter writer = new StreamWriter(@"C:\OabValidateDebug.log", true);
+            StreamWriter writer = new StreamWriter(this.logFolder + "OabValidateDebug.log", true);
             writer.WriteLine(logstring);
             writer.Close();
         }
